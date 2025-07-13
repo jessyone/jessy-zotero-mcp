@@ -1,9 +1,7 @@
 """
 Zotero MCP server implementation.
 """
-
 from typing import Any, Dict, List, Literal, Optional, Union
-import os
 import uuid
 import tempfile
 import asyncio
@@ -300,35 +298,35 @@ def get_item_fulltext(
     *,
     ctx: Context
 ) -> str:
+    return _get_item_fulltext_impl(item_key, ctx=ctx)
+
+def _get_item_fulltext_impl(
+    item_key: str,
+    *,
+    ctx: Context
+) -> str:
     """
     Get the full text content of a Zotero item.
-    
     Args:
         item_key: Zotero item key/ID
         ctx: MCP context
-    
     Returns:
         Markdown-formatted item full text
     """
     try:
         ctx.info(f"Fetching full text for item {item_key}")
         zot = get_zotero_client()
-        
         # First get the item metadata
         item = zot.item(item_key)
         if not item:
             return f"No item found with key: {item_key}"
-        
         # Get item metadata in markdown format
         metadata = format_item_metadata(item, include_abstract=True)
-        
         # Try to get attachment details
         attachment = get_attachment_details(zot, item)
         if not attachment:
             return f"{metadata}\n\n---\n\nNo suitable attachment found for this item."
-        
         ctx.info(f"Found attachment: {attachment.key} ({attachment.content_type})")
-        
         # Try fetching full text from Zotero's full text index first
         try:
             full_text_data = zot.fulltext_item(attachment.key)
@@ -337,19 +335,15 @@ def get_item_fulltext(
                 return f"{metadata}\n\n---\n\n## Full Text\n\n{full_text_data['content']}"
         except Exception as fulltext_error:
             ctx.info(f"Couldn't retrieve indexed full text: {str(fulltext_error)}")
-        
         # If we couldn't get indexed full text, try to download and convert the file
         try:
             ctx.info(f"Attempting to download and convert attachment {attachment.key}")
-            
             # Download the file to a temporary location
             import tempfile
             import os
-            
             with tempfile.TemporaryDirectory() as tmpdir:
                 file_path = os.path.join(tmpdir, attachment.filename or f"{attachment.key}.pdf")
                 zot.dump(attachment.key, filename=os.path.basename(file_path), path=tmpdir)
-                
                 if os.path.exists(file_path):
                     ctx.info(f"Downloaded file to {file_path}, converting to markdown")
                     converted_text = convert_to_markdown(file_path)
@@ -359,7 +353,6 @@ def get_item_fulltext(
         except Exception as download_error:
             ctx.error(f"Error downloading/converting file: {str(download_error)}")
             return f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}"
-        
     except Exception as e:
         ctx.error(f"Error fetching item full text: {str(e)}")
         return f"Error fetching item full text: {str(e)}"
@@ -1932,3 +1925,66 @@ def get_search_database_status(*, ctx: Context) -> str:
     except Exception as e:
         ctx.error(f"Error getting database status: {str(e)}")
         return f"Error getting database status: {str(e)}"
+
+
+def add_item_by_doi_impl(
+    doi: str,
+    *,
+    ctx: Context
+) -> str:
+    """
+    通过 DOI 添加文献条目到 Zotero 库。
+    
+    Args:
+        doi: 文献 DOI 号
+        ctx: MCP context
+    Returns:
+        Markdown 格式的添加结果
+    """
+    try:
+        if not doi or not isinstance(doi, str) or len(doi.strip()) < 6:
+            return f"错误：请输入合法的 DOI（当前输入：{doi}）"
+        doi = doi.strip()
+        ctx.info(f"尝试通过 DOI 添加文献: {doi}")
+        zot = get_zotero_client()
+        # 获取元数据
+        try:
+            item = zot.item_from_doi(doi)
+        except Exception as e:
+            ctx.error(f"DOI 获取元数据失败: {e}")
+            return f"错误：未能通过 DOI 获取文献信息（{doi}）。\n\n详细信息：{e}"
+        if not item:
+            return f"错误：未能通过 DOI 获取文献信息（{doi}）。"
+        # 添加到库
+        try:
+            result = zot.create_items([item])
+        except Exception as e:
+            ctx.error(f"添加条目失败: {e}")
+            return f"错误：添加条目到 Zotero 失败。\n\n详细信息：{e}"
+        # 解析返回
+        key = None
+        if isinstance(result, dict) and 'success' in result and result['success']:
+            key = next(iter(result['success'].keys()))
+        if not key:
+            return f"未添加新条目，可能已存在或发生未知问题（DOI: {doi}）。"
+        # 格式化作者
+        creators = item.get('creators', [])
+        authors = []
+        for c in creators:
+            if c.get('creatorType') == 'author':
+                name = c.get('lastName', '')
+                if c.get('firstName'):
+                    name = f"{c['firstName']} {name}".strip()
+                authors.append(name)
+        authors_str = ', '.join(authors) if authors else '未知作者'
+        # 格式化返回
+        return f"# 文献添加成功\n\n- **标题**: {item.get('title', '无标题')}\n- **作者**: {authors_str}\n- **年份**: {item.get('date', '未知')}\n- **DOI**: {doi}\n- **条目 Key**: {key}"
+    except Exception as e:
+        ctx.error(f"添加 DOI 条目时发生异常: {e}")
+        return f"错误：添加 DOI 条目时发生异常。详细信息：{e}"
+
+add_item_by_doi = mcp.tool(
+    name="zotero_add_item_by_doi",
+    description="通过 DOI 添加文献条目到 Zotero 库。"
+)(add_item_by_doi_impl)
+
