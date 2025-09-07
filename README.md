@@ -50,15 +50,7 @@
 
 ## 🚀 Quick Install
 
-### Installing via Smithery
-
-To install Zotero MCP for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@54yyyu/zotero-mcp):
-
-```bash
-npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude
-```
-
-### Manual Installation
+### Default Installation
 
 #### Installing via uv
 
@@ -72,6 +64,14 @@ zotero-mcp setup  # Auto-configure for Claude Desktop
 ```bash
 pip install git+https://github.com/54yyyu/zotero-mcp.git
 zotero-mcp setup  # Auto-configure for Claude Desktop
+```
+
+### Installing via Smithery
+
+To install Zotero MCP for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@54yyyu/zotero-mcp):
+
+```bash
+npx -y @smithery/cli install @54yyyu/zotero-mcp --client claude
 ```
 
 #### Updating Your Installation
@@ -118,8 +118,11 @@ zotero-mcp setup --semantic-config-only
 After setup, initialize your search database:
 
 ```bash
-# Build the semantic search database
+# Build the semantic search database (fast, metadata-only)
 zotero-mcp update-db
+
+# Build with full-text extraction (slower, more comprehensive)
+zotero-mcp update-db --fulltext
 
 # Check database status
 zotero-mcp db-status
@@ -213,6 +216,36 @@ Then click "Save".
 
 Cherry Studio also provides a visual configuration method for general settings and tools selection.
 
+### For Cursor
+
+#### Configuration
+
+1.  In Cursor, open the command palette (`Cmd+Shift+P` on macOS or `Ctrl+Shift+P` on Windows/Linux).
+2.  Search for `Preferences: Open User Settings (JSON)` and select it.
+3.  This will open your `settings.json` file. Add the following `mcpServers` configuration:
+
+```json
+{
+  // ... your other settings
+  "mcpServers": {
+    "zotero": {
+      "command": "zotero-mcp",
+      "env": {
+        "ZOTERO_LOCAL": "true"
+      }
+    }
+  }
+}
+```
+
+If you already have an `mcpServers` entry, just add the `"zotero"` part to it.
+
+#### Usage
+
+1.  Start Zotero desktop (make sure the local API is enabled in your Zotero preferences).
+2.  Launch Cursor and open a chat panel.
+3.  Type `@zotero` to activate the Zotero tools. You can then ask questions or use commands.
+
 ## 🔧 Advanced Configuration
 
 ### Using Web API Instead of Local API
@@ -250,6 +283,7 @@ zotero-mcp serve --transport stdio|streamable-http|sse
 # Setup and configuration
 zotero-mcp setup --help                    # Get help on setup options
 zotero-mcp setup --semantic-config-only    # Configure only semantic search
+zotero-mcp setup-info                      # Show installation path and config info for MCP clients
 
 # Updates and maintenance
 zotero-mcp update                          # Update to latest version
@@ -257,8 +291,10 @@ zotero-mcp update --check-only             # Check for updates without installin
 zotero-mcp update --force                  # Force update even if up to date
 
 # Semantic search database management
-zotero-mcp update-db                       # Update semantic search database
+zotero-mcp update-db                       # Update semantic search database (fast, metadata-only)
+zotero-mcp update-db --fulltext             # Update with full-text extraction (comprehensive but slower)
 zotero-mcp update-db --force-rebuild       # Force complete database rebuild
+zotero-mcp update-db --fulltext --force-rebuild  # Rebuild with full-text extraction
 zotero-mcp db-status                       # Show database status and info
 
 # General
@@ -309,15 +345,18 @@ The first time you use PDF annotation features, the necessary tools will be auto
 ## 🔍 Troubleshooting
 
 ### General Issues
-- **No results found**: Ensure Zotero is running and the local API is enabled
+- **No results found**: Ensure Zotero is running and the local API is enabled. You need to toggle on `Allow other applications on this computer to communicate with Zotero` in Zotero preferences.
 - **Can't connect to library**: Check your API key and library ID if using web API
 - **Full text not available**: Make sure you're using Zotero 7+ for local full-text access
+- **Local library limitations**: Some functionality (tagging, library modifications) may not work with local JS API. Consider using web library setup for full functionality. (See the [docs](docs/getting-started.md#local-library-limitations) for more info.)
+- **Installation/search option switching issues**: Database problems from changing install methods or search options can often be resolved with `zotero-mcp update-db --force-rebuild`
 
 ### Semantic Search Issues
 - **"Missing required environment variables" when running update-db**: Run `zotero-mcp setup` to configure your environment, or the CLI will automatically load settings from Claude Desktop config
 - **ChromaDB warnings**: Update to the latest version - deprecation warnings have been fixed
-- **Database update takes long**: This is normal for large libraries. Use `--limit` parameter for testing: `zotero-mcp update-db --limit 100`
+- **Database update takes long**: By default, `update-db` is fast (metadata-only). For comprehensive indexing with full-text, use `--fulltext` flag. Use `--limit` parameter for testing: `zotero-mcp update-db --limit 100`
 - **Semantic search returns no results**: Ensure the database is initialized with `zotero-mcp update-db` and check status with `zotero-mcp db-status`
+- **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
 - **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
 
 ### Update Issues  

@@ -1,15 +1,37 @@
 """
 Zotero MCP server implementation.
 """
+
+import logging
 from typing import Any, Dict, List, Literal, Optional, Union
+import os
+import sys
 import uuid
 import tempfile
 import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+# This will not override existing environment variables
+load_dotenv()
 
 from fastmcp import Context, FastMCP
+
+# Setup logging
+log_file_path = Path(__file__).parent.parent.parent / "zotero_mcp_server.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(log_file_path),
+        logging.StreamHandler()
+    ]
+)
+logging.info("Zotero MCP server script started.")
+
 
 from zotero_mcp.client import (
     AttachmentDetails,
@@ -25,7 +47,8 @@ from zotero_mcp.utils import format_creators
 @asynccontextmanager
 async def server_lifespan(server: FastMCP):
     """Manage server startup and shutdown lifecycle."""
-    print("Starting Zotero MCP server...")
+    logging.info("Server lifespan starting...")
+    sys.stderr.write("Starting Zotero MCP server...\n")
     
     # Check for semantic search auto-update on startup
     try:
@@ -37,33 +60,39 @@ async def server_lifespan(server: FastMCP):
             search = create_semantic_search(str(config_path))
             
             if search.should_update_database():
-                print("Auto-updating semantic search database...")
+                sys.stderr.write("Auto-updating semantic search database...\n")
+                logging.info("Auto-updating semantic search database...")
                 
                 # Run update in background to avoid blocking server startup
                 async def background_update():
                     try:
-                        stats = search.update_database()
-                        print(f"Database update completed: {stats.get('processed_items', 0)} items processed")
+                        stats = search.update_database(extract_fulltext=False)
+                        sys.stderr.write(f"Database update completed: {stats.get('processed_items', 0)} items processed\n")
+                        logging.info(f"Database update completed: {stats.get('processed_items', 0)} items processed")
                     except Exception as e:
-                        print(f"Background database update failed: {e}")
+                        sys.stderr.write(f"Background database update failed: {e}\n")
+                        logging.error(f"Background database update failed: {e}")
                 
                 # Start background task
                 asyncio.create_task(background_update())
     
     except Exception as e:
-        print(f"Warning: Could not check semantic search auto-update: {e}")
+        sys.stderr.write(f"Warning: Could not check semantic search auto-update: {e}\n")
+        logging.warning(f"Could not check semantic search auto-update: {e}")
     
     yield {}
     
-    print("Shutting down Zotero MCP server...")
+    logging.info("Server lifespan shutting down...")
+    sys.stderr.write("Shutting down Zotero MCP server...\n")
 
 
 # Create an MCP server with appropriate dependencies
+logging.info("Creating FastMCP instance...")
 mcp = FastMCP(
     "Zotero",
-    dependencies=["pyzotero", "mcp[cli]", "python-dotenv", "markitdown", "fastmcp", "chromadb", "sentence-transformers", "openai", "google-genai"],
     lifespan=server_lifespan,
 )
+logging.info("FastMCP instance created.")
 
 
 @mcp.tool(
@@ -93,8 +122,10 @@ def search_items(
     Returns:
         Markdown-formatted search results
     """
+    logging.info(f"Tool 'zotero_search_items' called with query: {query}")
     try:
         if not query.strip():
+            logging.warning("Search query is empty.")
             return "Error: Search query cannot be empty"
         
         tag_condition_str = ""
@@ -104,6 +135,7 @@ def search_items(
             tag = []
 
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
+        logging.info(f"Searching Zotero for '{query}'{tag_condition_str}")
         zot = get_zotero_client()
         
         if isinstance(limit, str):
@@ -114,6 +146,7 @@ def search_items(
         results = zot.items()
 
         if not results:
+            logging.warning(f"No items found matching query: '{query}'{tag_condition_str}")
             return f"No items found matching query: '{query}'{tag_condition_str}"
         
         # Format results as markdown
@@ -155,6 +188,7 @@ def search_items(
     
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
+        logging.error(f"Error searching Zotero: {str(e)}")
         return f"Error searching Zotero: {str(e)}"
 
 @mcp.tool(
@@ -190,11 +224,14 @@ def search_by_tag(
     Returns:
         Markdown-formatted search results
     """
+    logging.info(f"Tool 'zotero_search_by_tag' called with tag: {tag}")
     try:
         if not tag:
+            logging.warning("Tag list is empty.")
             return "Error: Tag cannot be empty"
 
         ctx.info(f"Searching Zotero for tag '{tag}'")
+        logging.info(f"Searching Zotero for tag '{tag}'")
         zot = get_zotero_client()
         
         if isinstance(limit, str):
@@ -205,6 +242,7 @@ def search_by_tag(
         results = zot.items()
         
         if not results:
+            logging.warning(f"No items found with tag: '{tag}'")
             return f"No items found with tag: '{tag}'"
         
         # Format results as markdown
@@ -246,6 +284,7 @@ def search_by_tag(
     
     except Exception as e:
         ctx.error(f"Error searching Zotero: {str(e)}")
+        logging.error(f"Error searching Zotero: {str(e)}")
         return f"Error searching Zotero: {str(e)}"
 
 @mcp.tool(
@@ -271,12 +310,15 @@ def get_item_metadata(
     Returns:
         Formatted item metadata (markdown or BibTeX)
     """
+    logging.info(f"Tool 'zotero_get_item_metadata' called with item_key: {item_key}")
     try:
         ctx.info(f"Fetching metadata for item {item_key} in {format} format")
+        logging.info(f"Fetching metadata for item {item_key} in {format} format")
         zot = get_zotero_client()
         
         item = zot.item(item_key)
         if not item:
+            logging.warning(f"No item found with key: {item_key}")
             return f"No item found with key: {item_key}"
         
         if format == "bibtex":
@@ -286,6 +328,7 @@ def get_item_metadata(
     
     except Exception as e:
         ctx.error(f"Error fetching item metadata: {str(e)}")
+        logging.error(f"Error fetching item metadata: {str(e)}")
         return f"Error fetching item metadata: {str(e)}"
 
 
@@ -298,63 +341,80 @@ def get_item_fulltext(
     *,
     ctx: Context
 ) -> str:
-    return _get_item_fulltext_impl(item_key, ctx=ctx)
-
-def _get_item_fulltext_impl(
-    item_key: str,
-    *,
-    ctx: Context
-) -> str:
     """
     Get the full text content of a Zotero item.
+    
     Args:
         item_key: Zotero item key/ID
         ctx: MCP context
+    
     Returns:
         Markdown-formatted item full text
     """
+    logging.info(f"Tool 'zotero_get_item_fulltext' called with item_key: {item_key}")
     try:
         ctx.info(f"Fetching full text for item {item_key}")
+        logging.info(f"Fetching full text for item {item_key}")
         zot = get_zotero_client()
+        
         # First get the item metadata
         item = zot.item(item_key)
         if not item:
+            logging.warning(f"No item found with key: {item_key}")
             return f"No item found with key: {item_key}"
+        
         # Get item metadata in markdown format
         metadata = format_item_metadata(item, include_abstract=True)
+        
         # Try to get attachment details
         attachment = get_attachment_details(zot, item)
         if not attachment:
+            logging.warning(f"No suitable attachment found for this item: {item_key}")
             return f"{metadata}\n\n---\n\nNo suitable attachment found for this item."
+        
         ctx.info(f"Found attachment: {attachment.key} ({attachment.content_type})")
+        logging.info(f"Found attachment: {attachment.key} ({attachment.content_type})")
+        
         # Try fetching full text from Zotero's full text index first
         try:
             full_text_data = zot.fulltext_item(attachment.key)
             if full_text_data and "content" in full_text_data and full_text_data["content"]:
-                ctx.info("Successfully retrieved full text from Zotero's index")
+                ctx.info(f"Successfully retrieved full text from Zotero's index")
+                logging.info(f"Successfully retrieved full text from Zotero's index")
                 return f"{metadata}\n\n---\n\n## Full Text\n\n{full_text_data['content']}"
         except Exception as fulltext_error:
             ctx.info(f"Couldn't retrieve indexed full text: {str(fulltext_error)}")
+            logging.warning(f"Couldn't retrieve indexed full text: {str(fulltext_error)}")
+        
         # If we couldn't get indexed full text, try to download and convert the file
         try:
             ctx.info(f"Attempting to download and convert attachment {attachment.key}")
+            logging.info(f"Attempting to download and convert attachment {attachment.key}")
+            
             # Download the file to a temporary location
             import tempfile
             import os
+            
             with tempfile.TemporaryDirectory() as tmpdir:
                 file_path = os.path.join(tmpdir, attachment.filename or f"{attachment.key}.pdf")
                 zot.dump(attachment.key, filename=os.path.basename(file_path), path=tmpdir)
+                
                 if os.path.exists(file_path):
                     ctx.info(f"Downloaded file to {file_path}, converting to markdown")
+                    logging.info(f"Downloaded file to {file_path}, converting to markdown")
                     converted_text = convert_to_markdown(file_path)
                     return f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}"
                 else:
+                    logging.warning(f"File download failed for attachment {attachment.key}")
                     return f"{metadata}\n\n---\n\nFile download failed."
         except Exception as download_error:
             ctx.error(f"Error downloading/converting file: {str(download_error)}")
+            logging.error(f"Error downloading/converting file: {str(download_error)}")
             return f"{metadata}\n\n---\n\nError accessing attachment: {str(download_error)}"
+        
     except Exception as e:
         ctx.error(f"Error fetching item full text: {str(e)}")
+        logging.error(f"Error fetching item full text: {str(e)}")
         return f"Error fetching item full text: {str(e)}"
 
 
@@ -377,8 +437,10 @@ def get_collections(
     Returns:
         Markdown-formatted list of collections
     """
+    logging.info("Tool 'zotero_get_collections' called.")
     try:
         ctx.info("Fetching collections")
+        logging.info("Fetching collections")
         zot = get_zotero_client()
         
         if isinstance(limit, str):
@@ -391,6 +453,7 @@ def get_collections(
         
         if not collections:
             output.append("No collections found in your Zotero library.")
+            logging.warning("No collections found in your Zotero library.")
             return "\n".join(output)
         
         # Create a mapping of collection IDs to their data
@@ -434,19 +497,23 @@ def get_collections(
         if not top_level_keys:
             # If no clear hierarchy, just list all collections
             output.append("Collections (flat list):")
+            logging.info("Collections (flat list):")
             for coll in sorted(collections, key=lambda x: x["data"].get("name", "")):
                 name = coll["data"].get("name", "Unnamed Collection")
                 key = coll["key"]
                 output.append(f"- **{name}** (Key: {key})")
+                logging.info(f"- **{name}** (Key: {key})")
         else:
             # Display hierarchical structure
             for key in sorted(top_level_keys):
                 output.extend(format_collection(key))
+                logging.info(f"Displaying hierarchical structure for parent key: {key}")
         
         return "\n".join(output)
     
     except Exception as e:
         ctx.error(f"Error fetching collections: {str(e)}")
+        logging.error(f"Error fetching collections: {str(e)}")
         error_msg = f"Error fetching collections: {str(e)}"
         return f"# Zotero Collections\n\n{error_msg}"
 
@@ -472,8 +539,10 @@ def get_collection_items(
     Returns:
         Markdown-formatted list of items in the collection
     """
+    logging.info(f"Tool 'zotero_get_collection_items' called with collection_key: {collection_key}")
     try:
         ctx.info(f"Fetching items for collection {collection_key}")
+        logging.info(f"Fetching items for collection {collection_key}")
         zot = get_zotero_client()
         
         # First get the collection details
@@ -489,6 +558,7 @@ def get_collection_items(
         # Then get the items
         items = zot.collection_items(collection_key, limit=limit)
         if not items:
+            logging.warning(f"No items found in collection: {collection_name} (Key: {collection_key})")
             return f"No items found in collection: {collection_name} (Key: {collection_key})"
         
         # Format items as markdown
@@ -518,6 +588,7 @@ def get_collection_items(
     
     except Exception as e:
         ctx.error(f"Error fetching collection items: {str(e)}")
+        logging.error(f"Error fetching collection items: {str(e)}")
         return f"Error fetching collection items: {str(e)}"
 
 
@@ -540,8 +611,10 @@ def get_item_children(
     Returns:
         Markdown-formatted list of child items
     """
+    logging.info(f"Tool 'zotero_get_item_children' called with item_key: {item_key}")
     try:
         ctx.info(f"Fetching children for item {item_key}")
+        logging.info(f"Fetching children for item {item_key}")
         zot = get_zotero_client()
         
         # First get the parent item details
@@ -554,6 +627,7 @@ def get_item_children(
         # Then get the children
         children = zot.children(item_key)
         if not children:
+            logging.warning(f"No child items found for: {parent_title} (Key: {item_key})")
             return f"No child items found for: {parent_title} (Key: {item_key})"
         
         # Format children as markdown
@@ -578,6 +652,7 @@ def get_item_children(
         # Format attachments
         if attachments:
             output.append("## Attachments")
+            logging.info("Formatting attachments...")
             for i, att in enumerate(attachments, 1):
                 data = att.get("data", {})
                 title = data.get("title", "Untitled")
@@ -591,10 +666,12 @@ def get_item_children(
                 if filename:
                     output.append(f"   - Filename: {filename}")
                 output.append("")
+                logging.info(f"Formatted attachment: {title} (Key: {key})")
         
         # Format notes
         if notes:
             output.append("## Notes")
+            logging.info("Formatting notes...")
             for i, note in enumerate(notes, 1):
                 data = note.get("data", {})
                 title = data.get("title", "Untitled Note")
@@ -613,10 +690,12 @@ def get_item_children(
                 output.append(f"   - Key: {key}")
                 output.append(f"   - Content:\n```\n{note_text}\n```")
                 output.append("")
+                logging.info(f"Formatted note: {title} (Key: {key})")
         
         # Format other item types
         if others:
             output.append("## Other Items")
+            logging.info("Formatting other item types...")
             for i, other in enumerate(others, 1):
                 data = other.get("data", {})
                 title = data.get("title", "Untitled")
@@ -627,11 +706,13 @@ def get_item_children(
                 output.append(f"   - Key: {key}")
                 output.append(f"   - Type: {item_type}")
                 output.append("")
+                logging.info(f"Formatted other item: {title} (Key: {key})")
         
         return "\n".join(output)
     
     except Exception as e:
         ctx.error(f"Error fetching item children: {str(e)}")
+        logging.error(f"Error fetching item children: {str(e)}")
         return f"Error fetching item children: {str(e)}"
 
 
@@ -654,8 +735,10 @@ def get_tags(
     Returns:
         Markdown-formatted list of tags
     """
+    logging.info("Tool 'zotero_get_tags' called.")
     try:
         ctx.info("Fetching tags")
+        logging.info("Fetching tags")
         zot = get_zotero_client()
         
         if isinstance(limit, str):
@@ -663,6 +746,7 @@ def get_tags(
         
         tags = zot.tags(limit=limit)
         if not tags:
+            logging.warning("No tags found in your Zotero library.")
             return "No tags found in your Zotero library."
         
         # Format tags as markdown
@@ -679,13 +763,16 @@ def get_tags(
             if first_letter != current_letter:
                 current_letter = first_letter
                 output.append(f"## {current_letter}")
+                logging.info(f"Grouping tags by letter: {current_letter}")
             
             output.append(f"- `{tag}`")
+            logging.info(f"- `{tag}`")
         
         return "\n".join(output)
     
     except Exception as e:
         ctx.error(f"Error fetching tags: {str(e)}")
+        logging.error(f"Error fetching tags: {str(e)}")
         return f"Error fetching tags: {str(e)}"
 
 
@@ -708,8 +795,10 @@ def get_recent(
     Returns:
         Markdown-formatted list of recent items
     """
+    logging.info(f"Tool 'zotero_get_recent' called with limit: {limit}")
     try:
         ctx.info(f"Fetching {limit} recent items")
+        logging.info(f"Fetching {limit} recent items")
         zot = get_zotero_client()
         
         if isinstance(limit, str):
@@ -724,6 +813,7 @@ def get_recent(
         # Get recent items
         items = zot.items(limit=limit, sort="dateAdded", direction="desc")
         if not items:
+            logging.warning(f"No items found in your Zotero library.")
             return "No items found in your Zotero library."
         
         # Format items as markdown
@@ -755,6 +845,7 @@ def get_recent(
     
     except Exception as e:
         ctx.error(f"Error fetching recent items: {str(e)}")
+        logging.error(f"Error fetching recent items: {str(e)}")
         return f"Error fetching recent items: {str(e)}"
 
 
@@ -764,8 +855,8 @@ def get_recent(
 )
 def batch_update_tags(
     query: str,
-    add_tags: Optional[List[str]] = None,
-    remove_tags: Optional[List[str]] = None,
+    add_tags: Optional[Union[List[str], str]] = None,
+    remove_tags: Optional[Union[List[str], str]] = None,
     limit: Union[int, str] = 50,
     *,
     ctx: Context
@@ -775,22 +866,52 @@ def batch_update_tags(
     
     Args:
         query: Search query to find items to update
-        add_tags: List of tags to add to matched items
-        remove_tags: List of tags to remove from matched items
+        add_tags: List of tags to add to matched items (can be list or JSON string)
+        remove_tags: List of tags to remove from matched items (can be list or JSON string)
         limit: Maximum number of items to process
         ctx: MCP context
     
     Returns:
         Summary of the batch update
     """
+    logging.info(f"Tool 'zotero_batch_update_tags' called with query: {query}")
     try:
         if not query:
+            logging.warning("Search query is empty for batch tag update.")
             return "Error: Search query cannot be empty"
         
         if not add_tags and not remove_tags:
+            logging.warning("No tags to add or remove for batch tag update.")
             return "Error: You must specify either tags to add or tags to remove"
         
+        # Debug logging... commented out for now but could be useful in future.
+        # ctx.info(f"add_tags type: {type(add_tags)}, value: {add_tags}")
+        # ctx.info(f"remove_tags type: {type(remove_tags)}, value: {remove_tags}")
+        
+        # Handle case where add_tags might be a JSON string instead of list
+        if add_tags and isinstance(add_tags, str):
+            try:
+                import json
+                add_tags = json.loads(add_tags)
+                ctx.info(f"Parsed add_tags from JSON string: {add_tags}")
+                logging.info(f"Parsed add_tags from JSON string: {add_tags}")
+            except json.JSONDecodeError:
+                logging.error(f"add_tags appears to be malformed JSON string: {add_tags}")
+                return f"Error: add_tags appears to be malformed JSON string: {add_tags}"
+        
+        # Handle case where remove_tags might be a JSON string instead of list  
+        if remove_tags and isinstance(remove_tags, str):
+            try:
+                import json
+                remove_tags = json.loads(remove_tags)
+                ctx.info(f"Parsed remove_tags from JSON string: {remove_tags}")
+                logging.info(f"Parsed remove_tags from JSON string: {remove_tags}")
+            except json.JSONDecodeError:
+                logging.error(f"remove_tags appears to be malformed JSON string: {remove_tags}")
+                return f"Error: remove_tags appears to be malformed JSON string: {remove_tags}"
+        
         ctx.info(f"Batch updating tags for items matching '{query}'")
+        logging.info(f"Batch updating tags for items matching '{query}'")
         zot = get_zotero_client()
         
         if isinstance(limit, str):
@@ -801,6 +922,7 @@ def batch_update_tags(
         items = zot.items()
         
         if not items:
+            logging.warning(f"No items found matching query: '{query}'")
             return f"No items found matching query: '{query}'"
         
         # Initialize counters
@@ -844,10 +966,21 @@ def batch_update_tags(
                         needs_update = True
             
             # Update the item if needed
+            # Since we are logging errors we might as well log the update.
             if needs_update:
-                item["data"]["tags"] = current_tags
-                zot.update_item(item)
-                updated_count += 1
+                try:
+                    item["data"]["tags"] = current_tags
+                    ctx.info(f"Updating item {item.get('key', 'unknown')} with tags: {current_tags}")
+                    logging.info(f"Updating item {item.get('key', 'unknown')} with tags: {current_tags}")
+                    result = zot.update_item(item)
+                    ctx.info(f"Update result: {result}")
+                    logging.info(f"Update result: {result}")
+                    updated_count += 1
+                except Exception as e:
+                    ctx.error(f"Failed to update item {item.get('key', 'unknown')}: {str(e)}")
+                    logging.error(f"Failed to update item {item.get('key', 'unknown')}: {str(e)}")
+                    # Continue with other items instead of failing completely
+                    skipped_count += 1
             else:
                 skipped_count += 1
         
@@ -860,18 +993,23 @@ def batch_update_tags(
         
         if add_tags:
             response.append("\n## Tags Added")
+            logging.info("Formatting tags added...")
             for tag, count in added_tag_counts.items():
                 response.append(f"- `{tag}`: {count} items")
+                logging.info(f"- `{tag}`: {count} items")
         
         if remove_tags:
             response.append("\n## Tags Removed")
+            logging.info("Formatting tags removed...")
             for tag, count in removed_tag_counts.items():
                 response.append(f"- `{tag}`: {count} items")
+                logging.info(f"- `{tag}`: {count} items")
         
         return "\n".join(response)
     
     except Exception as e:
         ctx.error(f"Error in batch tag update: {str(e)}")
+        logging.error(f"Error in batch tag update: {str(e)}")
         return f"Error in batch tag update: {str(e)}"
 
 
@@ -905,11 +1043,14 @@ def advanced_search(
     Returns:
         Markdown-formatted search results
     """
+    logging.info(f"Tool 'zotero_advanced_search' called with {len(conditions)} conditions.")
     try:
         if not conditions:
+            logging.warning("No search conditions provided for advanced search.")
             return "Error: No search conditions provided"
         
         ctx.info(f"Performing advanced search with {len(conditions)} conditions")
+        logging.info(f"Performing advanced search with {len(conditions)} conditions")
         zot = get_zotero_client()
         
         # Prepare search parameters
@@ -930,6 +1071,7 @@ def advanced_search(
         search_conditions = []
         for i, condition in enumerate(conditions):
             if "field" not in condition or "operation" not in condition or "value" not in condition:
+                logging.error(f"Condition {i+1} is missing required fields (field, operation, value): {condition}")
                 return f"Error: Condition {i+1} is missing required fields (field, operation, value)"
             
             # Map common field names to Zotero API fields if needed
@@ -967,6 +1109,7 @@ def advanced_search(
         
         # Extract the search key from the result
         if not saved_search.get("success"):
+            logging.error(f"Error creating saved search: {saved_search.get('failed', 'Unknown error')}")
             return f"Error creating saved search: {saved_search.get('failed', 'Unknown error')}"
         
         search_key = next(iter(saved_search.get("success", {}).values()), None)
@@ -980,9 +1123,11 @@ def advanced_search(
                 zot.delete_saved_search([search_key])
             except Exception as cleanup_error:
                 ctx.warn(f"Error cleaning up saved search: {str(cleanup_error)}")
+                logging.warning(f"Error cleaning up saved search: {str(cleanup_error)}")
         
         # Format the results
         if not results:
+            logging.warning("No items found matching the search criteria.")
             return "No items found matching the search criteria."
         
         output = ["# Advanced Search Results", ""]
@@ -1037,6 +1182,7 @@ def advanced_search(
     
     except Exception as e:
         ctx.error(f"Error in advanced search: {str(e)}")
+        logging.error(f"Error in advanced search: {str(e)}")
         return f"Error in advanced search: {str(e)}"
 
 
@@ -1063,6 +1209,7 @@ def get_annotations(
     Returns:
         Markdown-formatted list of annotations
     """
+    logging.info(f"Tool 'zotero_get_annotations' called with item_key: {item_key}")
     try:
         # Initialize Zotero client
         zot = get_zotero_client()
@@ -1078,7 +1225,9 @@ def get_annotations(
                 parent = zot.item(item_key)
                 parent_title = parent["data"].get("title", "Untitled Item")
                 ctx.info(f"Fetching annotations for item: {parent_title}")
+                logging.info(f"Fetching annotations for item: {parent_title}")
             except Exception:
+                logging.warning(f"Error fetching item details for annotation search: {item_key}")
                 return f"Error: No item found with key: {item_key}"
             
             # Initialize annotation sources
@@ -1116,6 +1265,7 @@ def get_annotations(
                                     break
                         except Exception as e:
                             ctx.warn(f"Error extracting citation key from Extra field: {e}")
+                            logging.warning(f"Error extracting citation key from Extra field: {e}")
                         
                         # Fallback to searching by title if no citation key found
                         if not citation_key:
@@ -1128,6 +1278,7 @@ def get_annotations(
                                     # Find the matching item
                                     for result in search_results:
                                         ctx.info(f"Checking result: {result}")
+                                        logging.info(f"Checking result: {result}")
                                         
                                         # Try to match with item key if possible
                                         if result.get('citekey'):
@@ -1135,6 +1286,7 @@ def get_annotations(
                                             break
                             except Exception as e:
                                 ctx.warn(f"Error searching for citation key: {e}")
+                                logging.warning(f"Error searching for citation key: {e}")
                         
                         # Process annotations if citation key found
                         if citation_key:
@@ -1178,10 +1330,13 @@ def get_annotations(
                                             better_bibtex_annotations.append(bibtex_anno)
                                 
                                 ctx.info(f"Retrieved {len(better_bibtex_annotations)} annotations via Better BibTeX")
+                                logging.info(f"Retrieved {len(better_bibtex_annotations)} annotations via Better BibTeX")
                             except Exception as e:
                                 ctx.warn(f"Error processing Better BibTeX annotations: {e}")
+                                logging.warning(f"Error processing Better BibTeX annotations: {e}")
                 except Exception as bibtex_error:
                     ctx.warn(f"Error initializing Better BibTeX: {bibtex_error}")
+                    logging.warning(f"Error initializing Better BibTeX: {bibtex_error}")
             
             # Fallback to Zotero API annotations
             if not better_bibtex_annotations:
@@ -1193,8 +1348,10 @@ def get_annotations(
                         if item.get("data", {}).get("itemType") == "annotation"
                     ]
                     ctx.info(f"Retrieved {len(zotero_api_annotations)} annotations via Zotero API")
+                    logging.info(f"Retrieved {len(zotero_api_annotations)} annotations via Zotero API")
                 except Exception as api_error:
                     ctx.warn(f"Error retrieving Zotero API annotations: {api_error}")
+                    logging.warning(f"Error retrieving Zotero API annotations: {api_error}")
             
             # PDF Extraction fallback
             if use_pdf_extraction and not (better_bibtex_annotations or zotero_api_annotations):
@@ -1251,8 +1408,10 @@ def get_annotations(
                                         pdf_annotations.append(pdf_anno)
                         
                         ctx.info(f"Retrieved {len(pdf_annotations)} annotations via PDF extraction")
+                        logging.info(f"Retrieved {len(pdf_annotations)} annotations via PDF extraction")
                 except Exception as pdf_error:
                     ctx.warn(f"Error during PDF annotation extraction: {pdf_error}")
+                    logging.warning(f"Error during PDF annotation extraction: {pdf_error}")
             
             # Combine annotations from all sources
             annotations = better_bibtex_annotations + zotero_api_annotations + pdf_annotations
@@ -1266,6 +1425,7 @@ def get_annotations(
         
         # Handle no annotations found
         if not annotations:
+            logging.warning(f"No annotations found{f' for item: {parent_title}' if item_key else ''}.")
             return f"No annotations found{f' for item: {parent_title}' if item_key else ''}."
         
         # Generate markdown output
@@ -1342,6 +1502,7 @@ def get_annotations(
     
     except Exception as e:
         ctx.error(f"Error fetching annotations: {str(e)}")
+        logging.error(f"Error fetching annotations: {str(e)}")
         return f"Error fetching annotations: {str(e)}"
 
 
@@ -1366,8 +1527,10 @@ def get_notes(
     Returns:
         Markdown-formatted list of notes
     """
+    logging.info(f"Tool 'zotero_get_notes' called with item_key: {item_key}")
     try:
         ctx.info(f"Fetching notes{f' for item {item_key}' if item_key else ''}")
+        logging.info(f"Fetching notes{f' for item {item_key}' if item_key else ''}")
         zot = get_zotero_client()
         
         # Prepare search parameters
@@ -1382,6 +1545,7 @@ def get_notes(
         notes = zot.items(**params) if not limit else zot.items(limit=limit, **params)
         
         if not notes:
+            logging.warning(f"No notes found{f' for item {item_key}' if item_key else ''}.")
             return f"No notes found{f' for item {item_key}' if item_key else ''}."
         
         # Generate markdown output
@@ -1429,6 +1593,7 @@ def get_notes(
     
     except Exception as e:
         ctx.error(f"Error fetching notes: {str(e)}")
+        logging.error(f"Error fetching notes: {str(e)}")
         return f"Error fetching notes: {str(e)}"
 
 
@@ -1453,11 +1618,14 @@ def search_notes(
     Returns:
         Markdown-formatted search results
     """
+    logging.info(f"Tool 'zotero_search_notes' called with query: {query}")
     try:
         if not query.strip():
+            logging.warning("Search query is empty for note search.")
             return "Error: Search query cannot be empty"
         
         ctx.info(f"Searching Zotero notes for '{query}'")
+        logging.info(f"Searching Zotero notes for '{query}'")
         zot = get_zotero_client()
         
         # Search for notes and annotations
@@ -1583,6 +1751,7 @@ def search_notes(
     
     except Exception as e:
         ctx.error(f"Error searching notes: {str(e)}")
+        logging.error(f"Error searching notes: {str(e)}")
         return f"Error searching notes: {str(e)}"
 
 
@@ -1611,8 +1780,10 @@ def create_note(
     Returns:
         Confirmation message with the new note key
     """
+    logging.info(f"Tool 'zotero_create_note' called with item_key: {item_key}")
     try:
         ctx.info(f"Creating note for item {item_key}")
+        logging.info(f"Creating note for item {item_key}")
         zot = get_zotero_client()
         
         # First verify the parent item exists
@@ -1620,6 +1791,7 @@ def create_note(
             parent = zot.item(item_key)
             parent_title = parent["data"].get("title", "Untitled Item")
         except Exception:
+            logging.warning(f"Error verifying parent item for note creation: {item_key}")
             return f"Error: No item found with key: {item_key}"
         
         # Format the note content with proper HTML
@@ -1652,14 +1824,18 @@ def create_note(
             successful = result["success"]
             if len(successful) > 0:
                 note_key = next(iter(successful.keys()))
+                logging.info(f"Successfully created note for \"{parent_title}\" with key: {note_key}")
                 return f"Successfully created note for \"{parent_title}\"\n\nNote key: {note_key}"
             else:
+                logging.warning(f"Note creation response was successful but no key was returned: {result}")
                 return f"Note creation response was successful but no key was returned: {result}"
         else:
+            logging.error(f"Failed to create note: {result.get('failed', 'Unknown error')}")
             return f"Failed to create note: {result.get('failed', 'Unknown error')}"
     
     except Exception as e:
         ctx.error(f"Error creating note: {str(e)}")
+        logging.error(f"Error creating note: {str(e)}")
         return f"Error creating note: {str(e)}"
 
 
@@ -1686,8 +1862,10 @@ def semantic_search(
     Returns:
         Markdown-formatted search results with similarity scores
     """
+    logging.info(f"Tool 'zotero_semantic_search' called with query: {query}")
     try:
         if not query.strip():
+            logging.warning("Search query is empty for semantic search.")
             return "Error: Search query cannot be empty"
         
         # Parse and validate filters parameter
@@ -1697,23 +1875,28 @@ def semantic_search(
                 try:
                     filters = json.loads(filters)
                     ctx.info(f"Parsed JSON string filters: {filters}")
+                    logging.info(f"Parsed JSON string filters: {filters}")
                 except json.JSONDecodeError as e:
+                    logging.error(f"Invalid JSON in filters parameter: {str(e)}")
                     return f"Error: Invalid JSON in filters parameter: {str(e)}"
             
             # Validate it's a dictionary
             if not isinstance(filters, dict):
+                logging.warning("filters parameter must be a dictionary or JSON string. Example: {\"item_type\": \"note\"}")
                 return "Error: filters parameter must be a dictionary or JSON string. Example: {\"item_type\": \"note\"}"
             
             # Automatically translate common field names
             if "itemType" in filters:
                 filters["item_type"] = filters.pop("itemType")
                 ctx.info(f"Automatically translated 'itemType' to 'item_type': {filters}")
+                logging.info(f"Automatically translated 'itemType' to 'item_type': {filters}")
             
             # Additional field name translations can be added here
             # Example: if "creatorType" in filters:
             #     filters["creator_type"] = filters.pop("creatorType")
         
         ctx.info(f"Performing semantic search for: '{query}'")
+        logging.info(f"Performing semantic search for: '{query}'")
         
         # Import semantic search module
         from zotero_mcp.semantic_search import create_semantic_search
@@ -1729,11 +1912,13 @@ def semantic_search(
         results = search.search(query=query, limit=limit, filters=filters)
         
         if results.get("error"):
+            logging.error(f"Semantic search error: {results['error']}")
             return f"Semantic search error: {results['error']}"
         
         search_results = results.get("results", [])
         
         if not search_results:
+            logging.warning(f"No semantically similar items found for query: '{query}'")
             return f"No semantically similar items found for query: '{query}'"
         
         # Format results as markdown
@@ -1796,6 +1981,7 @@ def semantic_search(
     
     except Exception as e:
         ctx.error(f"Error in semantic search: {str(e)}")
+        logging.error(f"Error in semantic search: {str(e)}")
         return f"Error in semantic search: {str(e)}"
 
 
@@ -1820,8 +2006,10 @@ def update_search_database(
     Returns:
         Update status and statistics
     """
+    logging.info("Tool 'zotero_update_search_database' called.")
     try:
         ctx.info("Starting semantic search database update...")
+        logging.info("Starting semantic search database update...")
         
         # Import semantic search module
         from zotero_mcp.semantic_search import create_semantic_search
@@ -1833,10 +2021,11 @@ def update_search_database(
         # Create semantic search instance
         search = create_semantic_search(str(config_path))
         
-        # Perform update
+        # Perform update with no fulltext extraction (for speed)
         stats = search.update_database(
             force_full_rebuild=force_rebuild,
-            limit=limit
+            limit=limit,
+            extract_fulltext=False
         )
         
         # Format results
@@ -1844,6 +2033,7 @@ def update_search_database(
         
         if stats.get("error"):
             output.append(f"**Error:** {stats['error']}")
+            logging.error(f"Semantic search database update failed: {stats['error']}")
         else:
             output.append(f"**Total items:** {stats.get('total_items', 0)}")
             output.append(f"**Processed:** {stats.get('processed_items', 0)}")
@@ -1857,11 +2047,13 @@ def update_search_database(
                 output.append(f"**Started:** {stats['start_time']}")
             if stats.get('end_time'):
                 output.append(f"**Completed:** {stats['end_time']}")
+            logging.info(f"Semantic search database update completed. Stats: {stats}")
         
         return "\n".join(output)
     
     except Exception as e:
         ctx.error(f"Error updating search database: {str(e)}")
+        logging.error(f"Error updating search database: {str(e)}")
         return f"Error updating search database: {str(e)}"
 
 
@@ -1879,8 +2071,10 @@ def get_search_database_status(*, ctx: Context) -> str:
     Returns:
         Database status information
     """
+    logging.info("Tool 'zotero_get_search_database_status' called.")
     try:
         ctx.info("Getting semantic search database status...")
+        logging.info("Getting semantic search database status...")
         
         # Import semantic search module
         from zotero_mcp.semantic_search import create_semantic_search
@@ -1907,6 +2101,7 @@ def get_search_database_status(*, ctx: Context) -> str:
         
         if collection_info.get('error'):
             output.append(f"**Error:** {collection_info['error']}")
+            logging.warning(f"Semantic search database status error: {collection_info['error']}")
         
         output.append("")
         
@@ -1920,71 +2115,10 @@ def get_search_database_status(*, ctx: Context) -> str:
         if update_config.get('update_days'):
             output.append(f"**Update Interval:** Every {update_config['update_days']} days")
         
+        logging.info(f"Semantic search database status retrieved. Status: {status}")
         return "\n".join(output)
     
     except Exception as e:
         ctx.error(f"Error getting database status: {str(e)}")
+        logging.error(f"Error getting database status: {str(e)}")
         return f"Error getting database status: {str(e)}"
-
-
-def add_item_by_doi_impl(
-    doi: str,
-    *,
-    ctx: Context
-) -> str:
-    """
-    通过 DOI 添加文献条目到 Zotero 库。
-    
-    Args:
-        doi: 文献 DOI 号
-        ctx: MCP context
-    Returns:
-        Markdown 格式的添加结果
-    """
-    try:
-        if not doi or not isinstance(doi, str) or len(doi.strip()) < 6:
-            return f"错误：请输入合法的 DOI（当前输入：{doi}）"
-        doi = doi.strip()
-        ctx.info(f"尝试通过 DOI 添加文献: {doi}")
-        zot = get_zotero_client()
-        # 获取元数据
-        try:
-            item = zot.item_from_doi(doi)
-        except Exception as e:
-            ctx.error(f"DOI 获取元数据失败: {e}")
-            return f"错误：未能通过 DOI 获取文献信息（{doi}）。\n\n详细信息：{e}"
-        if not item:
-            return f"错误：未能通过 DOI 获取文献信息（{doi}）。"
-        # 添加到库
-        try:
-            result = zot.create_items([item])
-        except Exception as e:
-            ctx.error(f"添加条目失败: {e}")
-            return f"错误：添加条目到 Zotero 失败。\n\n详细信息：{e}"
-        # 解析返回
-        key = None
-        if isinstance(result, dict) and 'success' in result and result['success']:
-            key = next(iter(result['success'].keys()))
-        if not key:
-            return f"未添加新条目，可能已存在或发生未知问题（DOI: {doi}）。"
-        # 格式化作者
-        creators = item.get('creators', [])
-        authors = []
-        for c in creators:
-            if c.get('creatorType') == 'author':
-                name = c.get('lastName', '')
-                if c.get('firstName'):
-                    name = f"{c['firstName']} {name}".strip()
-                authors.append(name)
-        authors_str = ', '.join(authors) if authors else '未知作者'
-        # 格式化返回
-        return f"# 文献添加成功\n\n- **标题**: {item.get('title', '无标题')}\n- **作者**: {authors_str}\n- **年份**: {item.get('date', '未知')}\n- **DOI**: {doi}\n- **条目 Key**: {key}"
-    except Exception as e:
-        ctx.error(f"添加 DOI 条目时发生异常: {e}")
-        return f"错误：添加 DOI 条目时发生异常。详细信息：{e}"
-
-add_item_by_doi = mcp.tool(
-    name="zotero_add_item_by_doi",
-    description="通过 DOI 添加文献条目到 Zotero 库。"
-)(add_item_by_doi_impl)
-
